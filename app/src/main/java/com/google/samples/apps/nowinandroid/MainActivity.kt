@@ -27,8 +27,11 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Composer
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.CompositionTracer
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.InternalComposeTracingApi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -55,7 +58,38 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.ArrayDeque
+import java.util.Deque
 import javax.inject.Inject
+
+@OptIn(InternalComposeTracingApi::class) val verifyingTracer = object : CompositionTracer {
+    private val openMethodNameStack: ThreadLocal<Deque<Pair<String, String>>> =
+        object : ThreadLocal<Deque<Pair<String, String>>>() {
+            override fun initialValue(): Deque<Pair<String, String>> = ArrayDeque()
+        }
+
+    override fun traceEventStart(key: Int, dirty1: Int, dirty2: Int, info: String) {
+        openMethodNameStack.get()!!.addLast(inferMethodName("traceEventStart") to info)
+    }
+
+    override fun traceEventEnd() {
+        val currentMethodName = inferMethodName("traceEventEnd")
+        val (openMethodName, traceInfo) = openMethodNameStack.get()!!.removeLast()
+        if (currentMethodName != openMethodName) throw IllegalStateException(
+            "314159: Mismatched start-end event." +
+                " Calling traceEventEnd() for: $currentMethodName." +
+                " Expecting traceEventEnd() for: $openMethodName (Composable name: $traceInfo).",
+        )
+    }
+
+    private fun inferMethodName(callerName: String) =
+        Thread.currentThread().stackTrace
+            .dropWhile { it.methodName != callerName }
+            .dropWhile { it.methodName == callerName }
+            .first().let { "${it.className}.${it.methodName}" }
+
+    override fun isTraceInProgress(): Boolean = true
+}
 
 private const val TAG = "MainActivity"
 
@@ -80,9 +114,12 @@ class MainActivity : ComponentActivity() {
 
     val viewModel: MainActivityViewModel by viewModels()
 
+    @OptIn(InternalComposeTracingApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        Composer.setTracer(verifyingTracer)
 
         var uiState: MainActivityUiState by mutableStateOf(Loading)
 
@@ -189,6 +226,7 @@ class MainActivity : ComponentActivity() {
                     status.isCompiledWithProfile -> "ProfileInstaller: is compiled with profile"
                     status.hasProfileEnqueuedForCompilation() ->
                         "ProfileInstaller: Enqueued for compilation"
+
                     else -> "Profile not compiled or enqueued"
                 },
             )
