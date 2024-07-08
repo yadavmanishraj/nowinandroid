@@ -1,5 +1,5 @@
 {
-  "image": "mingc/android-build-box",
+  "image": "mingc/android-build-box:latest",
   "features": {
   }
 }
